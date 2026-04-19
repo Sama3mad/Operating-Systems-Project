@@ -1,0 +1,12 @@
+# Rust build output (large — teammates run `cargo build` locally)
+/target/
+**/target/
+
+# Cargo can leave scratch dirs in some setups
+**/*.rs.bk
+
+# OS / editor noise (optional — safe to ignore)
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
