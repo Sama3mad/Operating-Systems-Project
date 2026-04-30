@@ -66,4 +66,6 @@ pub enum Message {
     ExportResult(Result<String, String>),
     SetFilter(String),
     ToggleMonitor,
+    ShowContextMenu(ConnectionSnapshot),
+    KillProcess(u32),
 }

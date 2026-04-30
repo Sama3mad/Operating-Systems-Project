@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, canvas::Canvas, column, container, row, scrollable, text, text_input, Column};
+use iced::widget::{button, canvas::Canvas, column, container, row, scrollable, text, text_input, Column, MouseArea};
 use iced::{alignment, time, Font, Length, Color, Element, Subscription, Task};
 use serde_json;
 
@@ -28,6 +28,7 @@ pub struct NetMonitor {
     pub filter_text: String,
     pub is_monitoring: bool,
     pub session_start: Option<Instant>,
+    pub context_menu: Option<ConnectionSnapshot>,
 }
 
 impl NetMonitor {
@@ -46,6 +47,7 @@ impl NetMonitor {
             filter_text: String::new(),
             is_monitoring: true,
             session_start: Some(Instant::now()),
+            context_menu: None,
         };
         (app, Task::none())
     }
@@ -258,11 +260,25 @@ impl NetMonitor {
 
             Message::SetFilter(text) => {
                 self.filter_text = text;
+                self.context_menu = None;
                 Task::none()
             }
 
             Message::ToggleMonitor => {
                 self.is_monitoring = !self.is_monitoring;
+                Task::none()
+            }
+
+            Message::ShowContextMenu(conn) => {
+                self.context_menu = Some(conn);
+                Task::none()
+            }
+
+            Message::KillProcess(pid) => {
+                if pid > 0 {
+                    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                }
+                self.context_menu = None;
                 Task::none()
             }
         }
@@ -519,55 +535,58 @@ impl NetMonitor {
                     let in_color = if in_rate > 100_000 { CYAN } else { WHITE };
                     let out_color = if out_rate > 100_000 { AMBER } else { WHITE };
 
-                    container(
-                        row(vec![
-                            container(cell(
-                                r.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
-                                MUTED,
-                            ))
-                            .width(Length::Fixed(col_widths[0]))
-                            .into(),
-                            container(cell(
-                                r.process_name.as_deref().unwrap_or("—").to_string(),
-                                WHITE,
-                            ))
-                            .width(Length::Fixed(col_widths[1]))
-                            .into(),
-                            container(cell(
-                                r.username.as_deref().unwrap_or("—").to_string(),
-                                MUTED,
-                            ))
-                            .width(Length::Fixed(col_widths[2]))
-                            .into(),
-                            container(cell(
-                                format!("{}:{}", r.src_ip, r.src_port),
-                                WHITE,
-                            ))
-                            .width(Length::Fixed(col_widths[3]))
-                            .into(),
-                            container(cell(
-                                format!("{}:{}", r.dst_ip, r.dst_port),
-                                MUTED,
-                            ))
-                            .width(Length::Fixed(col_widths[4]))
-                            .into(),
-                            container(cell(r.protocol.clone(), proto_color))
-                                .width(Length::Fixed(col_widths[5]))
+                    MouseArea::new(
+                        container(
+                            row(vec![
+                                container(cell(
+                                    r.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
+                                    MUTED,
+                                ))
+                                .width(Length::Fixed(col_widths[0]))
                                 .into(),
-                            container(cell(fmt_bytes(in_rate), in_color))
-                                .width(Length::Fixed(col_widths[6]))
+                                container(cell(
+                                    r.process_name.as_deref().unwrap_or("—").to_string(),
+                                    WHITE,
+                                ))
+                                .width(Length::Fixed(col_widths[1]))
                                 .into(),
-                            container(cell(fmt_bytes(out_rate), out_color))
-                                .width(Length::Fixed(col_widths[7]))
+                                container(cell(
+                                    r.username.as_deref().unwrap_or("—").to_string(),
+                                    MUTED,
+                                ))
+                                .width(Length::Fixed(col_widths[2]))
                                 .into(),
-                        ])
+                                container(cell(
+                                    format!("{}:{}", r.src_ip, r.src_port),
+                                    WHITE,
+                                ))
+                                .width(Length::Fixed(col_widths[3]))
+                                .into(),
+                                container(cell(
+                                    format!("{}:{}", r.dst_ip, r.dst_port),
+                                    MUTED,
+                                ))
+                                .width(Length::Fixed(col_widths[4]))
+                                .into(),
+                                container(cell(r.protocol.clone(), proto_color))
+                                    .width(Length::Fixed(col_widths[5]))
+                                    .into(),
+                                container(cell(fmt_bytes(in_rate), in_color))
+                                    .width(Length::Fixed(col_widths[6]))
+                                    .into(),
+                                container(cell(fmt_bytes(out_rate), out_color))
+                                    .width(Length::Fixed(col_widths[7]))
+                                    .into(),
+                            ])
+                        )
+                        .padding([0, 4])
+                        .width(Length::Fill)
+                        .style(move |_| container::Style {
+                            background: Some(iced::Background::Color(bg)),
+                            ..Default::default()
+                        })
                     )
-                    .padding([0, 4])
-                    .width(Length::Fill)
-                    .style(move |_| container::Style {
-                        background: Some(iced::Background::Color(bg)),
-                        ..Default::default()
-                    })
+                    .on_right_press(Message::ShowContextMenu(r.clone()))
                     .into()
                 })
                 .collect();
@@ -655,6 +674,56 @@ impl NetMonitor {
         main_col.push(sort_bar.into());
         main_col.push(table_section.height(Length::Fill).into());
         main_col.push(footer.into());
+
+        // Context menu if active
+        if let Some(conn) = &self.context_menu {
+            let menu = container(
+                column![
+                    button(
+                        text(format!("Filter by user: {}", conn.username.as_deref().unwrap_or("—")))
+                            .size(12)
+                            .color(WHITE)
+                            .font(Font::MONOSPACE)
+                    )
+                    .on_press(Message::SetFilter(conn.username.clone().unwrap_or_default()))
+                    .style(|_, _| button::Style {
+                        background: Some(iced::Background::Color(SURFACE)),
+                        border: iced::Border::default(),
+                        ..Default::default()
+                    })
+                    .padding([4, 8]),
+                    button(
+                        text(format!("Filter by process: {}", conn.process_name.as_deref().unwrap_or("—")))
+                            .size(12)
+                            .color(WHITE)
+                            .font(Font::MONOSPACE)
+                    )
+                    .on_press(Message::SetFilter(conn.process_name.clone().unwrap_or_default()))
+                    .style(|_, _| button::Style {
+                        background: Some(iced::Background::Color(SURFACE)),
+                        border: iced::Border::default(),
+                        ..Default::default()
+                    })
+                    .padding([4, 8]),
+                    button(text("Kill process").size(12).color(RED).font(Font::MONOSPACE))
+                        .on_press(Message::KillProcess(conn.pid.unwrap_or(0)))
+                        .style(|_, _| button::Style {
+                            background: Some(iced::Background::Color(SURFACE)),
+                            border: iced::Border::default(),
+                            ..Default::default()
+                        })
+                        .padding([4, 8]),
+                ]
+                .spacing(2)
+            )
+            .padding(8)
+            .style(|_| container::Style {
+                background: Some(iced::Background::Color(SURFACE2)),
+                border: iced::Border { color: BORDER, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            });
+            main_col.push(menu.into());
+        }
 
         container(Column::with_children(main_col).spacing(0))
             .width(Length::Fill)
