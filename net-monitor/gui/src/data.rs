@@ -64,4 +64,6 @@ pub enum Message {
     SetSort(SortMode),
     ExportCsv,
     ExportResult(Result<String, String>),
+    SetFilter(String),
+    ToggleMonitor,
 }

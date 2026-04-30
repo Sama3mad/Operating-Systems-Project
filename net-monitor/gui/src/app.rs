@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, canvas::Canvas, column, container, row, scrollable, text, Column};
+use iced::widget::{button, canvas::Canvas, column, container, row, scrollable, text, text_input, Column};
 use iced::{alignment, time, Font, Length, Color, Element, Subscription, Task};
 use serde_json;
 
@@ -24,6 +24,10 @@ pub struct NetMonitor {
 
     // Socket polling state
     pub stream: Option<BufReader<UnixStream>>,
+    // New fields
+    pub filter_text: String,
+    pub is_monitoring: bool,
+    pub session_start: Option<Instant>,
 }
 
 impl NetMonitor {
@@ -33,12 +37,15 @@ impl NetMonitor {
             scroll: 0,
             last_snapshot_at: None,
             sort_mode: SortMode::OutDesc,
-            in_history: std::collections::VecDeque::with_capacity(HISTORY_LEN + 4),
-            out_history: std::collections::VecDeque::with_capacity(HISTORY_LEN + 4),
+            in_history: VecDeque::with_capacity(HISTORY_LEN + 4),
+            out_history: VecDeque::with_capacity(HISTORY_LEN + 4),
             active_alert: None,
             alert_arrived_at: None,
             export_status: None,
             stream: None,
+            filter_text: String::new(),
+            is_monitoring: true,
+            session_start: Some(Instant::now()),
         };
         (app, Task::none())
     }
@@ -53,6 +60,20 @@ impl NetMonitor {
             .values()
             .map(|t| t.snapshot.clone())
             .collect();
+
+        // Filter based on filter_text
+        if !self.filter_text.is_empty() {
+            let filter = self.filter_text.to_lowercase();
+            rows.retain(|r| {
+                r.process_name.as_deref().unwrap_or("").to_lowercase().contains(&filter)
+                    || r.src_ip.to_lowercase().contains(&filter)
+                    || r.dst_ip.to_lowercase().contains(&filter)
+                    || r.src_port.to_string().contains(&filter)
+                    || r.dst_port.to_string().contains(&filter)
+                    || r.username.as_deref().unwrap_or("").to_lowercase().contains(&filter)
+            });
+        }
+
         match self.sort_mode {
             SortMode::OutDesc => rows.sort_by(|a, b| b.bytes_out_per_sec.cmp(&a.bytes_out_per_sec)),
             SortMode::InDesc => rows.sort_by(|a, b| b.bytes_in_per_sec.cmp(&a.bytes_in_per_sec)),
@@ -234,6 +255,16 @@ impl NetMonitor {
                 self.export_status = Some((msg, Instant::now()));
                 Task::none()
             }
+
+            Message::SetFilter(text) => {
+                self.filter_text = text;
+                Task::none()
+            }
+
+            Message::ToggleMonitor => {
+                self.is_monitoring = !self.is_monitoring;
+                Task::none()
+            }
         }
     }
 }
@@ -352,6 +383,45 @@ impl NetMonitor {
             .spacing(0),
         )
         .padding(12)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(iced::Background::Color(SURFACE)),
+            border: iced::Border { color: BORDER, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        });
+
+        // ── Toolbar ──
+        let toolbar = container(
+            row![
+                text("FILTER:").size(11).color(MUTED).font(Font::MONOSPACE),
+                text_input("process name, IP, port, user", &self.filter_text)
+                    .on_input(Message::SetFilter)
+                    .padding([4, 8])
+                    .size(12)
+                    .font(Font::MONOSPACE),
+                iced::widget::Space::with_width(Length::Fill),
+                button(
+                    text(if self.is_monitoring { "⏸ Stop Monitor" } else { "▶ Start Monitor" })
+                        .size(12)
+                        .color(WHITE)
+                        .font(Font::MONOSPACE),
+                )
+                .on_press(Message::ToggleMonitor)
+                .style(|_, _| button::Style {
+                    background: Some(iced::Background::Color(if self.is_monitoring { RED } else { GREEN })),
+                    border: iced::Border {
+                        color: BORDER,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .padding([4, 10]),
+            ]
+            .spacing(8)
+            .align_y(alignment::Vertical::Center),
+        )
+        .padding([8, 12])
         .width(Length::Fill)
         .style(|_| container::Style {
             background: Some(iced::Background::Color(SURFACE)),
@@ -522,13 +592,39 @@ impl NetMonitor {
 
         // ── Footer ──
         let conn_count = self.tracked.len();
+        let session_time = if let Some(start) = self.session_start {
+        let elapsed = start.elapsed();
+        let total_secs = elapsed.as_secs();
+
+        let hours = total_secs / 3600;
+        let minutes = (total_secs % 3600) / 60;
+        let seconds = total_secs % 60;
+
+        format!("Session: {:02}:{:02}:{:02}", hours, minutes, seconds)
+        } else {
+            "Session: N/A".to_string()
+        };
         let footer = container(
             row![
-                text(format!("{conn_count} connections"))
-                    .size(11)
-                    .color(MUTED)
-                    .font(Font::MONOSPACE),
+                // LEFT GROUP
+                row![
+                    text(format!("{conn_count} connections"))
+                        .size(11)
+                        .color(MUTED)
+                        .font(Font::MONOSPACE),
+
+                    iced::widget::Space::with_width(Length::Fixed(16.0)), // small gap
+
+                    text(session_time)
+                        .size(11)
+                        .color(MUTED)
+                        .font(Font::MONOSPACE),
+                ]
+                .align_y(alignment::Vertical::Center),
+
                 iced::widget::Space::with_width(Length::Fill),
+
+                // RIGHT SIDE
                 text("net-monitor v0.1  |  iced gui")
                     .size(11)
                     .color(Color::from_rgba(1.0, 1.0, 1.0, 0.2))
@@ -555,6 +651,7 @@ impl NetMonitor {
         }
 
         main_col.push(chart_section.into());
+        main_col.push(toolbar.into());
         main_col.push(sort_bar.into());
         main_col.push(table_section.height(Length::Fill).into());
         main_col.push(footer.into());
@@ -574,6 +671,10 @@ impl NetMonitor {
 
 impl NetMonitor {
     pub fn subscription(&self) -> Subscription<Message> {
-        time::every(Duration::from_millis(250)).map(|_| Message::Tick)
+        if self.is_monitoring {
+            time::every(Duration::from_millis(250)).map(|_| Message::Tick)
+        } else {
+            Subscription::none()
+        }
     }
 }
