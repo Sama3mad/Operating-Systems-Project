@@ -38,6 +38,13 @@ pub fn attribute(
     dst_port: u16,
     protocol: Protocol,
 ) -> Option<ProcessInfo> {
+    if matches!(
+        protocol,
+        Protocol::Sctp | Protocol::Icmpv4 | Protocol::Icmpv6
+    ) {
+        return None;
+    }
+
     let local_port = src_port;
     let inode = find_inode(src_port, dst_port, protocol);
 
@@ -73,6 +80,7 @@ fn find_inode(src_port: u16, dst_port: u16, protocol: Protocol) -> Option<String
     let files = match protocol {
         Protocol::Tcp => ["/proc/net/tcp", "/proc/net/tcp6"],
         Protocol::Udp => ["/proc/net/udp", "/proc/net/udp6"],
+        Protocol::Sctp | Protocol::Icmpv4 | Protocol::Icmpv6 => return None,
     };
 
     for file in files {
