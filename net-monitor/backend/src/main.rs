@@ -7,6 +7,7 @@ use std::thread;
 
 use clap::Parser;
 
+mod aggregate;
 mod aggregator;
 mod alert;
 mod capture;
@@ -16,6 +17,7 @@ mod ipc;
 mod output;
 mod parser;
 mod proc_attr;
+mod process_control;
 
 #[derive(Parser, Debug)]
 #[command(name = "backend")]
@@ -57,7 +59,14 @@ fn main() {
 
     let (tx, rx) = mpsc::channel();
     let (ipc_tx, ipc_rx) = mpsc::channel();
-    let ipc_thread = ipc::start_ipc_server(ipc_rx, Arc::clone(&history));
+    let iface = Arc::new(cli.iface.clone());
+    let process_limits = process_control::new_process_limits();
+    let ipc_thread = ipc::start_ipc_server(
+        ipc_rx,
+        Arc::clone(&history),
+        iface,
+        Arc::clone(&process_limits),
+    );
     let capture_running = Arc::clone(&running);
     let capture_thread = thread::spawn(move || {
         capture::run_capture_loop(capture, tx, capture_running);
@@ -72,6 +81,7 @@ fn main() {
         cli.alert_threshold,
         Arc::clone(&history),
         Arc::clone(&running),
+        process_limits,
     );
 
     running.store(false, Ordering::Relaxed);

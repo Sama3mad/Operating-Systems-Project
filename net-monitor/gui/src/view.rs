@@ -1,7 +1,7 @@
 use iced::widget::{button, container, text};
 use iced::{Background, Border, Color, Element, Font, Length};
 
-use crate::data::{Message, SortMode};
+use crate::data::{MainTab, Message, SortMode};
 
 // ─── View ─────────────────────────────────────────────────────────────────────
 
@@ -15,6 +15,19 @@ pub fn fmt_bytes(b: u64) -> String {
     }
 }
 
+/// Human-readable byte count (cumulative), not a rate.
+pub fn fmt_bytes_total(b: u64) -> String {
+    if b >= 1_000_000_000 {
+        format!("{:.2} GB", b as f64 / 1_000_000_000.0)
+    } else if b >= 1_000_000 {
+        format!("{:.2} MB", b as f64 / 1_000_000.0)
+    } else if b >= 1_000 {
+        format!("{:.1} KB", b as f64 / 1_000.0)
+    } else {
+        format!("{b} B")
+    }
+}
+
 // Colors
 pub const BG: Color = Color { r: 0.05, g: 0.07, b: 0.10, a: 1.0 };
 pub const SURFACE: Color = Color { r: 0.09, g: 0.11, b: 0.16, a: 1.0 };
@@ -23,6 +36,9 @@ pub const BORDER: Color = Color { r: 0.18, g: 0.22, b: 0.30, a: 1.0 };
 pub const CYAN: Color = Color { r: 0.20, g: 0.80, b: 1.0, a: 1.0 };
 pub const AMBER: Color = Color { r: 1.0, g: 0.75, b: 0.20, a: 1.0 };
 pub const GREEN: Color = Color { r: 0.25, g: 0.85, b: 0.55, a: 1.0 };
+pub const SCTP: Color = Color { r: 0.75, g: 0.45, b: 0.95, a: 1.0 };
+pub const ICMP_V4: Color = Color { r: 0.95, g: 0.55, b: 0.65, a: 1.0 };
+pub const ICMP_V6: Color = Color { r: 0.55, g: 0.65, b: 0.95, a: 1.0 };
 pub const RED: Color = Color { r: 1.0, g: 0.30, b: 0.30, a: 1.0 };
 pub const MUTED: Color = Color { r: 0.45, g: 0.52, b: 0.62, a: 1.0 };
 pub const WHITE: Color = Color::WHITE;
@@ -49,6 +65,25 @@ pub fn header_cell<'a>(label: &'a str) -> Element<'a, Message> {
     .padding([4, 8])
     .width(Length::Fill)
     .into()
+}
+
+pub fn tab_btn<'a>(label: &'a str, tab: MainTab, current: MainTab) -> Element<'a, Message> {
+    let active = tab == current;
+    let bg = if active { CYAN } else { SURFACE2 };
+    let fg = if active { BG } else { MUTED };
+    button(text(label).size(12).color(fg).font(Font::MONOSPACE))
+        .on_press(Message::SetTab(tab))
+        .style(move |_, _| button::Style {
+            background: Some(Background::Color(bg)),
+            border: Border {
+                color: BORDER,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        })
+        .padding([6, 14])
+        .into()
 }
 
 pub fn sort_btn<'a>(label: &'a str, mode: SortMode, current: SortMode) -> Element<'a, Message> {

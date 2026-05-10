@@ -22,6 +22,11 @@ use serde::Deserialize;
 
 const SOCKET_PATH: &str = "/tmp/net-monitor.sock";
 
+enum StreamMsg {
+    Snapshots(Vec<ConnectionSnapshot>),
+    Iface(String),
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 struct ConnectionSnapshot {
@@ -35,7 +40,7 @@ struct ConnectionSnapshot {
     protocol: String,
     bytes_in_per_sec: u64,
     bytes_out_per_sec: u64,
-    timestamp_unix: u64,
+    timestamp_unix: i64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -43,7 +48,7 @@ struct AlertEvent {
     message: String,
     total_bytes_per_sec: u64,
     threshold: u64,
-    timestamp_unix: u64,
+    timestamp_unix: i64,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -82,6 +87,7 @@ struct AppState {
     alert_cleared_at: Option<Instant>,
     export_status: Option<String>,
     export_status_set_at: Option<Instant>,
+    iface: String,
 }
 
 impl AppState {
@@ -99,6 +105,7 @@ impl AppState {
             alert_cleared_at: None,
             export_status: None,
             export_status_set_at: None,
+            iface: "…".to_string(),
         }
     }
 
@@ -126,40 +133,56 @@ impl AppState {
         rows
     }
 
-    fn drain_updates(&mut self, rx: &Receiver<Vec<ConnectionSnapshot>>) {
+    fn clamp_table_scroll(&mut self) {
+        let n = self.sorted_rows().len();
+        self.scroll = if n == 0 {
+            0
+        } else {
+            self.scroll.min(n.saturating_sub(1))
+        };
+    }
+
+    fn drain_updates(&mut self, rx: &Receiver<StreamMsg>) {
         let mut saw_new_snapshot = false;
-        while let Ok(snapshot_vec) = rx.try_recv() {
-            saw_new_snapshot = true;
-            let now = Instant::now();
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                StreamMsg::Iface(name) => {
+                    self.iface = name;
+                }
+                StreamMsg::Snapshots(snapshot_vec) => {
+                    saw_new_snapshot = true;
+                    let now = Instant::now();
 
-            let total_in: u64 = snapshot_vec.iter().map(|r| r.bytes_in_per_sec).sum();
-            let total_out: u64 = snapshot_vec.iter().map(|r| r.bytes_out_per_sec).sum();
-            let elapsed = self.session_start.elapsed().as_secs_f64();
-            self.bandwidth_history.push_back((elapsed, total_in as f64));
-            self.bandwidth_history_out
-                .push_back((elapsed, total_out as f64));
-            while self.bandwidth_history.len() > 30 {
-                let _ = self.bandwidth_history.pop_front();
-            }
-            while self.bandwidth_history_out.len() > 30 {
-                let _ = self.bandwidth_history_out.pop_front();
-            }
+                    let total_in: u64 = snapshot_vec.iter().map(|r| r.bytes_in_per_sec).sum();
+                    let total_out: u64 = snapshot_vec.iter().map(|r| r.bytes_out_per_sec).sum();
+                    let elapsed = self.session_start.elapsed().as_secs_f64();
+                    self.bandwidth_history.push_back((elapsed, total_in as f64));
+                    self.bandwidth_history_out
+                        .push_back((elapsed, total_out as f64));
+                    while self.bandwidth_history.len() > 30 {
+                        let _ = self.bandwidth_history.pop_front();
+                    }
+                    while self.bandwidth_history_out.len() > 30 {
+                        let _ = self.bandwidth_history_out.pop_front();
+                    }
 
-            for snapshot in snapshot_vec {
-                let key = ConnectionKey {
-                    src_ip: snapshot.src_ip.clone(),
-                    src_port: snapshot.src_port,
-                    dst_ip: snapshot.dst_ip.clone(),
-                    dst_port: snapshot.dst_port,
-                    protocol: snapshot.protocol.clone(),
-                };
-                self.tracked.insert(
-                    key,
-                    TrackedConnection {
-                        snapshot,
-                        last_seen: now,
-                    },
-                );
+                    for snapshot in snapshot_vec {
+                        let key = ConnectionKey {
+                            src_ip: snapshot.src_ip.clone(),
+                            src_port: snapshot.src_port,
+                            dst_ip: snapshot.dst_ip.clone(),
+                            dst_port: snapshot.dst_port,
+                            protocol: snapshot.protocol.clone(),
+                        };
+                        self.tracked.insert(
+                            key,
+                            TrackedConnection {
+                                snapshot,
+                                last_seen: now,
+                            },
+                        );
+                    }
+                }
             }
         }
 
@@ -168,12 +191,12 @@ impl AppState {
 
         if saw_new_snapshot {
             self.last_snapshot_at = Some(Instant::now());
-            self.scroll = 0;
         }
+        self.clamp_table_scroll();
     }
 
-    fn active_len(&self) -> usize {
-        self.tracked.len()
+    fn sorted_row_count(&self) -> usize {
+        self.sorted_rows().len()
     }
 
     fn drain_alerts(&mut self, alert_rx: &Receiver<AlertEvent>) {
@@ -226,7 +249,7 @@ impl Drop for TerminalCleanup {
     }
 }
 
-fn spawn_socket_thread(tx: Sender<Vec<ConnectionSnapshot>>, alert_tx: Sender<AlertEvent>) {
+fn spawn_socket_thread(tx: Sender<StreamMsg>, alert_tx: Sender<AlertEvent>) {
     thread::spawn(move || {
         loop {
             match UnixStream::connect(SOCKET_PATH) {
@@ -244,16 +267,23 @@ fn spawn_socket_thread(tx: Sender<Vec<ConnectionSnapshot>>, alert_tx: Sender<Ale
                                 if trimmed.is_empty() {
                                     continue;
                                 }
+                                if let Some(iface) = trimmed.strip_prefix("IFACE ") {
+                                    let _ = tx.send(StreamMsg::Iface(iface.to_string()));
+                                    continue;
+                                }
                                 if let Some(alert_json) = trimmed.strip_prefix("ALERT ") {
                                     if let Ok(alert) = serde_json::from_str::<AlertEvent>(alert_json) {
                                         let _ = alert_tx.send(alert);
                                     }
                                     continue;
                                 }
+                                if trimmed.starts_with("AGGREGATE ") {
+                                    continue;
+                                }
                                 if let Ok(snapshot) =
                                     serde_json::from_str::<Vec<ConnectionSnapshot>>(trimmed)
                                 {
-                                    let _ = tx.send(snapshot);
+                                    let _ = tx.send(StreamMsg::Snapshots(snapshot));
                                 }
                             }
                             Err(_) => break,
@@ -319,7 +349,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &AppState) {
     };
 
     let top = Paragraph::new(Line::from(vec![
-        Span::raw("Linux Network Monitor | Interface: eth0 | "),
+        Span::raw(format!("Linux Network Monitor | Interface: {} | ", app.iface)),
         Span::raw(format!("In: {} B/s | Out: {} B/s | Status: ", total_in, total_out)),
         status_text,
     ]))
@@ -522,7 +552,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &AppState) {
 
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    rx: Receiver<Vec<ConnectionSnapshot>>,
+    rx: Receiver<StreamMsg>,
     alert_rx: Receiver<AlertEvent>,
 ) -> io::Result<()> {
     let mut app = AppState::new();
@@ -551,15 +581,19 @@ fn run_app(
                     }
                     KeyCode::Char('s') => {
                         app.sort_mode = SortMode::InDesc;
+                        app.scroll = 0;
                     }
                     KeyCode::Char('S') => {
                         app.sort_mode = SortMode::OutDesc;
+                        app.scroll = 0;
                     }
                     KeyCode::Char('p') => {
                         app.sort_mode = SortMode::PidAsc;
+                        app.scroll = 0;
                     }
                     KeyCode::Char('n') => {
                         app.sort_mode = SortMode::ProcessAsc;
+                        app.scroll = 0;
                     }
                     KeyCode::Up => {
                         if app.scroll > 0 {
@@ -567,7 +601,8 @@ fn run_app(
                         }
                     }
                     KeyCode::Down => {
-                        if app.scroll + 1 < app.active_len() {
+                        let n = app.sorted_row_count();
+                        if n > 0 && app.scroll + 1 < n {
                             app.scroll += 1;
                         }
                     }
@@ -582,7 +617,7 @@ fn run_app(
 }
 
 fn main() -> io::Result<()> {
-    let (tx, rx) = mpsc::channel::<Vec<ConnectionSnapshot>>();
+    let (tx, rx) = mpsc::channel::<StreamMsg>();
     let (alert_tx, alert_rx) = mpsc::channel::<AlertEvent>();
     spawn_socket_thread(tx, alert_tx);
 

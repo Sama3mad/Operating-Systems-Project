@@ -351,6 +351,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "etherparse",
+ "nix 0.29.0",
  "pcap",
  "serde",
  "serde_json",

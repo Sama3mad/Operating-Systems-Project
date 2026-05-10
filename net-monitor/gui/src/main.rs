@@ -8,6 +8,7 @@ mod chart;
 mod app;
 mod view;
 mod export;
+mod ipc_cmd;
 
 use crate::app::NetMonitor;
 
