@@ -41,6 +41,14 @@ A real-time network traffic monitor for Linux, built in Rust. Captures packets, 
 
 ## Building
 
+
+Note: cargo build does not install the `pcap` library on its own, so independent installation is needed. To install the library, run
+
+```bash
+```
+
+After, run the following 
+
 ```bash
 cd net-monitor
 cargo build
@@ -53,7 +61,7 @@ This builds all three components: `backend`, `gui`, and `tui` binaries.
 ### 1. Run the Backend (requires sudo)
 
 ```bash
-sudo cargo run --bin backend -- --iface eth0
+sudo ./target/debug/backend --iface eth0
 ```
 
 ### 2. Run the GUI or TUI
