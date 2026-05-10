@@ -1,119 +1,245 @@
 # net-monitor
 
-A real-time network traffic monitor for Linux, built in Rust. Captures packets, attributes connections to processes, and displays bandwidth usage via a GUI or TUI.
+A real-time network traffic monitor for Linux, built in Rust.  
+It captures packets, attributes network connections to running processes, and displays live bandwidth usage through either a graphical interface (GUI) or terminal interface (TUI).
+
+---
 
 ## Features
 
-- **Packet capture** - Capture TCP, UDP, SCTP, ICMPv4, and ICMPv6 traffic via libpcap
-- **Process attribution** - Link connections to running processes using `/proc` filesystem analysis
-- **Real-time monitoring** - Live connection table with per-second traffic statistics
-- **Bandwidth alerts** - Threshold-based alerts when bandwidth exceeds configured limits
-- **Auto-kill** - Automatically terminate processes that exceed rate or total data limits
-- **Aggregate views** - Roll up traffic by process or by protocol
-- **Session history** - Store and export historical data as JSON or CSV
-- **Dual interfaces** - Choose between a graphical UI (GUI) or terminal UI (TUI)
+- **Packet Capture**
+  - Capture TCP, UDP, SCTP, ICMPv4, and ICMPv6 traffic using `libpcap`
+
+- **Process Attribution**
+  - Map active network connections to Linux processes using `/proc`
+
+- **Real-Time Monitoring**
+  - Live connection table with continuously updated bandwidth statistics
+
+- **Bandwidth Alerts**
+  - Trigger alerts when traffic exceeds configured thresholds
+
+- **Auto-Kill Support**
+  - Automatically terminate processes that exceed configured bandwidth or data usage limits
+
+- **Aggregate Views**
+  - View traffic grouped by process or protocol
+
+- **Session History**
+  - Store and export historical traffic data as JSON or CSV
+
+- **Dual Interfaces**
+  - Choose between:
+    - GUI built with **Iced**
+    - TUI built with **Ratatui**
+
+---
 
 ## Architecture
 
-```
-┌──────────────┐         Unix Socket           ┌───────────┐
-│   Backend    │◄──────────────────────────────│    GUI    │
-│  (packet     │         /tmp/                 │  (Iced)   │
-│  capture)    │         net-monitor.sock      │           │
-│              │                               └───────────┘
-│  - libpcap   │                              ┌───────────┐
-│  - etherparse│                              │    TUI    │
-│  - aggregator│                              │ (Ratatui) │
-│  - proc_attr │                              └───────────┘
-└──────────────┘
+```text
+┌────────────────────┐      Unix Socket IPC      ┌──────────────────┐
+│      Backend       │◄─────────────────────────►│       GUI        │
+│  (runs as root)    │    /tmp/net-monitor.sock  │      (Iced)      │
+│                    │                            │                  │
+│  - libpcap         │                            └──────────────────┘
+│  - etherparse      │
+│  - traffic engine  │                            ┌──────────────────┐
+│  - proc analyzer   │◄─────────────────────────►│       TUI        │
+│  - alert manager   │    /tmp/net-monitor.sock  │    (Ratatui)     │
+└────────────────────┘                            └──────────────────┘
 ```
 
-- **Backend** - Runs as root, captures packets, aggregates traffic, exposes IPC via Unix socket
-- **GUI** - Modern graphical interface with live charts, multi-tab views, and context menus (Iced)
-- **TUI** - Terminal interface with real-time table and bandwidth chart (Ratatui)
+### Components
+
+#### Backend
+Responsible for:
+- Packet capture
+- Traffic aggregation
+- Process attribution
+- Alert handling
+- IPC communication via Unix socket
+
+> Requires root privileges for packet capture.
+
+#### GUI
+Modern graphical interface built with **Iced** featuring:
+- Live charts
+- Multi-tab views
+- Context menus
+- Process management controls
+
+#### TUI
+Terminal-based interface built with **Ratatui** featuring:
+- Real-time traffic tables
+- Bandwidth graphs
+- Lightweight terminal monitoring
+
+---
 
 ## Requirements
 
-- Linux (uses `/proc/net/tcp`, `/proc/<pid>/fd`, Unix domain sockets)
-- Root privileges (for packet capture)
-- Rust toolchain (nightly for backend/tui with 2024 edition, stable for GUI with 2021 edition)
-- libpcap development files (`libpcap-dev` on Debian/Ubuntu)
+### Operating System
+- Linux only
+
+### Dependencies
+- Rust toolchain
+- `libpcap` development package
+
+### Privileges
+- Root access is required for packet capture
+
+### Rust Versions
+| Component | Rust Edition |
+|-----------|--------------|
+| Backend | 2024 (nightly) |
+| TUI | 2024 (nightly) |
+| GUI | 2021 (stable) |
+
+---
+
+## Installing Dependencies
+
+### Debian / Ubuntu
+
+Install `libpcap` development files:
+
+```bash
+sudo apt update
+sudo apt install libpcap-dev
+```
+
+---
 
 ## Building
 
-
-Note: cargo build does not install the `pcap` library on its own, so independent installation is needed. To install the library, run
-
-```bash
-```
-
-After, run the following 
+Clone the repository and build all binaries:
 
 ```bash
+git clone <repository-url>
 cd net-monitor
+
 cargo build
 ```
 
-This builds all three components: `backend`, `gui`, and `tui` binaries.
+This builds:
+- `backend`
+- `gui`
+- `tui`
+
+Binaries will be located in:
+
+```text
+target/debug/
+```
+
+---
 
 ## Usage
 
-### 1. Run the Backend (requires sudo)
+## 1. Start the Backend
+
+The backend must run with root privileges.
 
 ```bash
 sudo ./target/debug/backend --iface eth0
 ```
 
-### 2. Run the GUI or TUI
+### Example
 
 ```bash
-# GUI
-cargo run --bin gui
+sudo ./target/debug/backend \
+    --iface wlan0 \
+    --alert-threshold 1000000
+```
 
-# TUI
+---
+
+## 2. Launch the GUI or TUI
+
+### GUI
+
+```bash
+cargo run --bin gui
+```
+
+### TUI
+
+```bash
 cargo run --bin tui
 ```
 
-Both the GUI and TUI connect to the backend automatically via the Unix socket at `/tmp/net-monitor.sock`.
+Both interfaces automatically connect to:
 
-## Configuration
+```text
+/tmp/net-monitor.sock
+```
 
-### Backend CLI Arguments
+---
+
+## Backend CLI Arguments
 
 | Argument | Default | Description |
-|----------|---------|-------------|
-| `--iface <interface>` | `eth0` | Network interface to capture on |
-| `--filter-ip <IP>` | None | Filter by source or destination IP address |
-| `--filter-port <port>` | None | Filter by source or destination port |
-| `--alert-threshold <bytes/sec>` | None | Bandwidth threshold to trigger alerts |
+|----------|----------|-------------|
+| `--iface <interface>` | `eth0` | Network interface to monitor |
+| `--filter-ip <ip>` | None | Filter traffic by IP address |
+| `--filter-port <port>` | None | Filter traffic by port |
+| `--alert-threshold <bytes/sec>` | None | Trigger alert above threshold |
 
-### IPC Commands
+---
 
-Connect to the socket and send commands:
+## IPC Commands
+
+You can communicate directly with the backend socket using tools like `socat`.
+
+### Stream Live Data
 
 ```bash
-# Stream live snapshots (default when GUI/TUI connects)
 echo "stream" | sudo socat - UNIX-CONNECT:/tmp/net-monitor.sock
+```
 
-# Export session history as JSON
+### Export Session History (JSON)
+
+```bash
 echo "export json" | sudo socat - UNIX-CONNECT:/tmp/net-monitor.sock
+```
 
-# Export session history as CSV
+### Export Session History (CSV)
+
+```bash
 echo "export csv" | sudo socat - UNIX-CONNECT:/tmp/net-monitor.sock
+```
 
-# Kill a process by PID
+### Kill a Process
+
+```bash
 echo "kill 1234" | sudo socat - UNIX-CONNECT:/tmp/net-monitor.sock
+```
 
-# Set a rate limit for a PID (bytes/sec)
+### Set Bandwidth Rate Limit
+
+```bash
 echo "limit set 1234 1000000" | sudo socat - UNIX-CONNECT:/tmp/net-monitor.sock
+```
 
-# Set a total data cap for a PID (bytes)
+### Set Total Data Limit
+
+```bash
 echo "limit total set 1234 500000000" | sudo socat - UNIX-CONNECT:/tmp/net-monitor.sock
+```
 
-# Clear limits for a PID
+### Clear Limits
+
+```bash
 echo "limit clear 1234" | sudo socat - UNIX-CONNECT:/tmp/net-monitor.sock
 ```
 
-## License
+---
 
-MIT
+## Notes
+
+- The backend must be running before launching the GUI or TUI.
+- Some interfaces may use different naming conventions (`eth0`, `wlan0`, `enp0s3`, etc.).
+- Running packet capture on high-traffic systems may require optimization or filtering.
+
+---
